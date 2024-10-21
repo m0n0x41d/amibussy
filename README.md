@@ -94,7 +94,7 @@ A free Ngrok account is sufficient for amibussy but may have limitations. With a
 	•	not_working_status: The title after being inactive for the specified AFK duration.
 	•	minutes_till_afk: The number of minutes before switching to “Not Working”.
 
-Usage
+## Usage
 
 1.	Run the Application:
 
