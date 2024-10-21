@@ -137,12 +137,12 @@ It will work with both - simple timers and pomodoros.
 
 ## Roadmap
 
-	•	Automated Webhook Configuration: Implement functionality to automatically manage webhooks.
-	•	Enhanced Error Handling: Improve error messages and exception handling.
-	•	Release Binaries: Build release binaries to simplify installation.
-	•	Extended Configuration Options: Support environment variables and command-line arguments.
-    •   Make it work as daemon, without redundant headaches.
-	•	Unit Tests: Add tests to ensure code stability and reliability.
+• Automated Webhook Configuration: Implement functionality to automatically manage webhooks.
+• Enhanced Error Handling: Improve error messages and exception handling.
+• Release Binaries: Build release binaries to simplify installation.
+• Extended Configuration Options: Support environment variables and command-line arguments.
+• Make it work as daemon, without redundant headaches.
+• Unit Tests: Add tests to ensure code stability and reliability.
 
 ## Contributing
 
@@ -154,9 +154,9 @@ This project is licensed under the MIT License. See the LICENSE file for details
 
 ## Acknowledgements
 
-	•	Toggl Track: For time-tracking service and webhooks.
-	•	Telegram Bot API: For enabling bot interactions.
-	•	Ngrok: For secure tunnels to localhost.
-	•	Axum: For the web framework used in this application.
-	•	Tokio: For async runtime support.
+• Toggl Track: For time-tracking service and webhooks.
+• Telegram Bot API: For enabling bot interactions.
+• Ngrok: For secure tunnels to localhost.
+• Axum: For the web framework used in this application.
+• Tokio: For async runtime support.
 
