@@ -85,14 +85,14 @@ A free Ngrok account is sufficient for amibussy but may have limitations. With a
 
 ### Configuration Fields
 
-	•	bot_token: The token provided by BotFather for your Telegram bot. Make sure to add the bot as an admin to your chat.
-	•	ngrok_authtoken: Your Ngrok authentication token.
-	•	ngrok_domain: A reserved domain from Ngrok.
-	•	chat_id: The ID of the Telegram chat to update (e.g., @your_chat_id).
-	•	busy_chat_status: The title when a time entry starts.
-	•	break_chat_status: The title when a time entry stops.
-	•	not_working_status: The title after being inactive for the specified AFK duration.
-	•	minutes_till_afk: The number of minutes before switching to “Not Working”.
+- bot_token: The token provided by BotFather for your Telegram bot. Make sure to add the bot as an admin to your chat.
+- ngrok_authtoken: Your Ngrok authentication token.
+- ngrok_domain: A reserved domain from Ngrok.
+- chat_id: The ID of the Telegram chat to update (e.g., @your_chat_id).
+- busy_chat_status: The title when a time entry starts.
+- break_chat_status: The title when a time entry stops.
+- not_working_status: The title after being inactive for the specified AFK duration.
+- minutes_till_afk: The number of minutes before switching to “Not Working”.
 
 ## Usage
 
