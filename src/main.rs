@@ -9,7 +9,9 @@ use axum::{
 use config::{Config, Environment, File};
 use hyper::StatusCode;
 use ngrok::{config::TunnelBuilder, tunnel::HttpTunnel, Session};
+use reqwest::header::CONTENT_TYPE;
 use reqwest::{Client, StatusCode as ReqwesStatusCode};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     sync::{
@@ -25,6 +27,8 @@ use tracing_subscriber;
 #[derive(Debug, Clone, serde::Deserialize)]
 struct Settings {
     bot_token: String,
+    toggl_track_token: String,
+    toggl_track_workspace_id: u64,
     ngrok_authtoken: String,
     ngrok_domain: String,
     chat_id: String,
@@ -52,6 +56,23 @@ impl Settings {
 struct AppState {
     settings: Settings,
     last_break_start: Arc<AtomicU64>,
+}
+
+// MODELS
+#[derive(Debug, Deserialize)]
+struct Subscription {
+    subscription_id: u64,
+    workspace_id: u64,
+    user_id: u64,
+    enabled: bool,
+    description: String,
+    event_filters: Vec<Value>, // Now treated as generic JSON
+    url_callback: String,
+    secret: String,
+    validated_at: String,
+    has_pending_events: bool,
+    created_at: String,
+    updated_at: String,
 }
 
 fn get_unix_timestamp() -> anyhow::Result<u64> {
@@ -314,11 +335,45 @@ async fn ngrok_healthcheck(settings: Settings, shutdown_signal: Arc<tokio::sync:
     }
 }
 
+async fn ensure_toggle_track_subscription(settings: Settings) -> Result<()> {
+    let client = Client::new();
+
+    println!("SETTINGS: {:?}", settings);
+
+    let subscriptios: Vec<Subscription> = client
+        .get(&format!(
+            "https://api.track.toggl.com/webhooks/api/v1/subscriptions/{}",
+            settings.toggl_track_workspace_id,
+        ))
+        .header(CONTENT_TYPE, "application/json")
+        .basic_auth(settings.toggl_track_token.clone(), Some("api_token"))
+        .send()
+        .await?
+        .json()
+        .await?;
+   
+    // 1. Filter subscriptions by our domain
+    //
+    // 2. If the length of subsctipions is zero - create the subscption 
+    //
+    // 3. if length of subscriptions more than 1 - delete every other in toggltrack api, get subs
+    //    again and ensure that only one is left
+    //
+    // 4. Ensure that the one subscription is enabled
+     
+
+    println!("RESPONSE: {:?}", subscriptios);
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let settings = Settings::from_config().unwrap();
+
+    ensure_toggle_track_subscription(settings.clone()).await?;
 
     loop {
         let listener = match start_ngrok_listener(&settings).await {
