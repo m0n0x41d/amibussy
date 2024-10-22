@@ -35,7 +35,6 @@ struct Settings {
 }
 
 impl Settings {
-    // study anyhow
     fn from_config() -> anyhow::Result<Self> {
         let config_path = shellexpand::tilde("~/.config/amibussy/settings.yaml").to_string();
         let settings = Config::builder()
@@ -182,8 +181,7 @@ async fn webhook_post(State(state): State<AppState>, body: Bytes) -> Response {
 }
 
 async fn webhook_get() -> Html<&'static str> {
-    // just for debugging.
-    Html("<h1>Nothing interesting here, stranger.</h1>")
+    Html("<h4>Ok</h4>")
 }
 
 async fn start_ngrok_listener(settings: &Settings) -> Result<HttpTunnel> {
@@ -199,9 +197,10 @@ async fn start_ngrok_listener(settings: &Settings) -> Result<HttpTunnel> {
         .await?;
 
     info!(
-        "Ngrok tunnel started: {}. Listening...",
-        settings.ngrok_domain
+        "Ngrok tunnel started to listen on: {}",
+        &format!("https://{}/webhook", settings.ngrok_domain)
     );
+
     Ok(listener)
 }
 
@@ -224,8 +223,8 @@ async fn run_server(settings: Settings, listener: HttpTunnel) -> Result<()> {
         .serve(router.into_make_service())
         .with_graceful_shutdown(shutdown_future);
 
-    let ngrok_keepalive_handle =
-        tokio::spawn(ngrok_keepalive(settings.clone(), shutdown_signal.clone()));
+    let ngrok_healthcheck_handler =
+        tokio::spawn(ngrok_healthcheck(settings.clone(), shutdown_signal.clone()));
     let afk_status_updater_handle = tokio::spawn(afk_status_updater(
         settings.clone(),
         last_break_start.clone(),
@@ -236,11 +235,9 @@ async fn run_server(settings: Settings, listener: HttpTunnel) -> Result<()> {
         error!("Server error: {}", err);
     }
 
-    // Notify tasks to shut down
     shutdown_signal.notify_waiters();
 
-    // Wait for tasks to finish
-    let _ = ngrok_keepalive_handle.await;
+    let _ = ngrok_healthcheck_handler.await;
     let _ = afk_status_updater_handle.await;
 
     Ok(())
@@ -294,27 +291,23 @@ async fn afk_status_updater(
     }
 }
 
-async fn ngrok_keepalive(settings: Settings, shutdown_signal: Arc<tokio::sync::Notify>) {
+async fn ngrok_healthcheck(settings: Settings, shutdown_signal: Arc<tokio::sync::Notify>) {
     let client = Client::new();
-    let mut interval = interval(Duration::from_secs(30));
+    let mut interval = interval(Duration::from_secs(15));
 
     loop {
         tokio::select! {
             _ = interval.tick() => {},
             _ = shutdown_signal.notified() => {
-                info!("Shutting down ngrok_keepalive");
+                info!("Tearing down ngrok_healthcheck...");
                 break;
             }
         }
 
         let url = format!("https://{}/webhook", settings.ngrok_domain);
-        info!("Sending Ngrok keep-alive request to: {}", url);
-
         let response = client.get(&url).send().await;
         if response.is_err() || response.unwrap().status() != ReqwesStatusCode::OK {
-            error!("Ngrok tunnel down. Restarting...");
-
-            // Signal the server to shutdown
+            error!("Ngrok tunnel seems to be down. Restarting listener...");
             shutdown_signal.notify_one();
             break;
         }
@@ -337,10 +330,10 @@ async fn main() -> Result<()> {
             }
         };
 
-        let server_handle = tokio::spawn(run_server(settings.clone(), listener));
+        let server_handler = tokio::spawn(run_server(settings.clone(), listener));
 
         tokio::select! {
-            res = server_handle => {
+            res = server_handler => {
                 match res {
                     Ok(Ok(_)) => info!("Server exited normally."),
                     Ok(Err(err)) => error!("Server exited with error: {}", err),
@@ -353,8 +346,8 @@ async fn main() -> Result<()> {
             }
         }
 
-        // Sleep before restarting
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        // Short nap before restarting
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 
     Ok(())
