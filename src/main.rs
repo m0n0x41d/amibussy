@@ -6,10 +6,10 @@ use axum::{
     routing::post,
     Router,
 };
-use config::{Config, File, Environment};
+use config::{Config, Environment, File};
 use hyper::StatusCode;
-use ngrok::{config::TunnelBuilder, Session};
-use reqwest::Client;
+use ngrok::{config::TunnelBuilder, tunnel::HttpTunnel, Session};
+use reqwest::{Client, StatusCode as ReqwesStatusCode};
 use serde_json::{json, Value};
 use std::{
     sync::{
@@ -18,7 +18,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::signal;
+use tokio::{signal, time::interval};
 use tracing::{error, info, warn};
 use tracing_subscriber;
 
@@ -186,108 +186,175 @@ async fn webhook_get() -> Html<&'static str> {
     Html("<h1>Nothing interesting here, stranger.</h1>")
 }
 
+async fn start_ngrok_listener(settings: &Settings) -> Result<HttpTunnel> {
+    let session = Session::builder()
+        .authtoken(&settings.ngrok_authtoken)
+        .connect()
+        .await?;
+
+    let listener = session
+        .http_endpoint()
+        .domain(&settings.ngrok_domain)
+        .listen()
+        .await?;
+
+    info!(
+        "Ngrok tunnel started: {}. Listening...",
+        settings.ngrok_domain
+    );
+    Ok(listener)
+}
+
+async fn run_server(settings: Settings, listener: HttpTunnel) -> Result<()> {
+    let last_break_start = Arc::new(AtomicU64::new(0));
+    let shutdown_signal = Arc::new(tokio::sync::Notify::new());
+
+    let app_state = AppState {
+        settings: settings.clone(),
+        last_break_start: last_break_start.clone(),
+    };
+
+    let router = Router::new()
+        .route("/webhook", post(webhook_post).get(webhook_get))
+        .with_state(app_state);
+
+    let shutdown_signal_clone = shutdown_signal.clone();
+    let shutdown_future = shutdown_signal_clone.notified();
+    let server = axum::Server::builder(listener)
+        .serve(router.into_make_service())
+        .with_graceful_shutdown(shutdown_future);
+
+    let ngrok_keepalive_handle =
+        tokio::spawn(ngrok_keepalive(settings.clone(), shutdown_signal.clone()));
+    let afk_status_updater_handle = tokio::spawn(afk_status_updater(
+        settings.clone(),
+        last_break_start.clone(),
+        shutdown_signal.clone(),
+    ));
+
+    if let Err(err) = server.await {
+        error!("Server error: {}", err);
+    }
+
+    // Notify tasks to shut down
+    shutdown_signal.notify_waiters();
+
+    // Wait for tasks to finish
+    let _ = ngrok_keepalive_handle.await;
+    let _ = afk_status_updater_handle.await;
+
+    Ok(())
+}
+
+async fn afk_status_updater(
+    settings: Settings,
+    last_break_start: Arc<AtomicU64>,
+    shutdown_signal: Arc<tokio::sync::Notify>,
+) {
+    let mut interval = interval(Duration::from_secs(15));
+    let client = Client::new();
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {},
+            _ = shutdown_signal.notified() => {
+                info!("Shutting down afk_status_updater");
+                break;
+            }
+        }
+
+        let last_break = last_break_start.load(Ordering::Relaxed);
+        if last_break == 0 {
+            continue;
+        }
+
+        let current_time = get_unix_timestamp().unwrap();
+        if current_time > last_break + settings.minutes_till_afk * 60 {
+            let set_chat_title_url = format!(
+                "https://api.telegram.org/bot{}/setChatTitle",
+                settings.bot_token
+            );
+            let not_working_payload = json!({
+                "chat_id": settings.chat_id,
+                "title": settings.not_working_status
+            });
+
+            let response = client
+                .post(&set_chat_title_url)
+                .json(&not_working_payload)
+                .send()
+                .await;
+
+            info!(
+                "[SETTING NOT_WORKING] Telegram API response: {:?}",
+                response
+            );
+            last_break_start.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+async fn ngrok_keepalive(settings: Settings, shutdown_signal: Arc<tokio::sync::Notify>) {
+    let client = Client::new();
+    let mut interval = interval(Duration::from_secs(30));
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {},
+            _ = shutdown_signal.notified() => {
+                info!("Shutting down ngrok_keepalive");
+                break;
+            }
+        }
+
+        let url = format!("https://{}/webhook", settings.ngrok_domain);
+        info!("Sending Ngrok keep-alive request to: {}", url);
+
+        let response = client.get(&url).send().await;
+        if response.is_err() || response.unwrap().status() != ReqwesStatusCode::OK {
+            error!("Ngrok tunnel down. Restarting...");
+
+            // Signal the server to shutdown
+            shutdown_signal.notify_one();
+            break;
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let settings = Settings::from_config().unwrap();
 
-    info!("RUNNING AMIBUSSY WITH SETTINGS: {:?}", settings);
+    loop {
+        let listener = match start_ngrok_listener(&settings).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                error!("Failed to start ngrok listener: {}", err);
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
 
-    let last_break_start = Arc::new(AtomicU64::new(0));
+        let server_handle = tokio::spawn(run_server(settings.clone(), listener));
 
-    // TODO: Add check of the subsctiption ID. It is it not created - create it and save in the
-    // config file.
-    // TODO: Add check of the subsctiption status. Enable it is is disabled.
-
-    tokio::spawn({
-        let settings = settings.clone();
-        let last_break_start_clone = last_break_start.clone();
-        async move {
-            // Sleep for a short duration to avoid busy waiting
-            let mut interval = tokio::time::interval(Duration::from_secs(15));
-            loop {
-                interval.tick().await;
-
-                let last_break = last_break_start_clone.load(Ordering::Relaxed);
-                if last_break == 0 {
-                    continue;
-                }
-
-                let current_time = get_unix_timestamp().unwrap();
-
-                if current_time > last_break + settings.minutes_till_afk * 60 {
-                    let set_chat_title_url = format!(
-                        "https://api.telegram.org/bot{}/setChatTitle",
-                        settings.bot_token
-                    );
-                    let client = Client::new();
-                    let not_working_payload = serde_json::json!({
-                        "chat_id": settings.chat_id,
-                        "title": settings.not_working_status
-                    });
-
-                    let response = client
-                        .post(&set_chat_title_url)
-                        .json(&not_working_payload)
-                        .send()
-                        .await;
-
-                    info!("[SETTING NOT_WORKING]. Reason: No Toggl Track timer runninng, Telegram API Response: {:?}", response);
-
-                    last_break_start_clone.store(0, Ordering::Relaxed);
+        tokio::select! {
+            res = server_handle => {
+                match res {
+                    Ok(Ok(_)) => info!("Server exited normally."),
+                    Ok(Err(err)) => error!("Server exited with error: {}", err),
+                    Err(err) => error!("Server task panicked: {}", err),
                 }
             }
-        }
-    });
-
-    // Ngrok keepalive.
-    tokio::spawn({
-        let ngrok_url = format!("https://{}/webhook", settings.ngrok_domain.clone());
-        async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
-            let client = Client::new();
-            loop {
-                interval.tick().await;
-                info!("Sending Ngrok keep-alive request to: {}", ngrok_url);
-                if let Err(err) = client.get(&ngrok_url).send().await {
-                    error!("Ngrok keep-alive request failed: {}", err);
-                }
+            _ = signal::ctrl_c() => {
+                info!("Received Ctrl+C, shutting down.");
+                break;
             }
         }
-    });
 
-
-    // Main server part.
-    let listener = Session::builder()
-        .authtoken(&settings.ngrok_authtoken)
-        .connect()
-        .await?
-        .http_endpoint()
-        .domain(&settings.ngrok_domain)
-        .listen()
-        .await?;
-
-    let app_state = AppState {
-        settings,
-        last_break_start: last_break_start.clone(),
-    };
-
-    let toggltrack_router = Router::new()
-        .route("/webhook", post(webhook_post).get(webhook_get))
-        .with_state(app_state);
-
-    let server = axum::Server::builder(listener).serve(toggltrack_router.into_make_service());
-
-    tokio::select! {
-        res = server => {
-            if let Err(err) = res {
-                error!("Server error: {}", err);
-            }
-        }
-        _ = signal::ctrl_c() => {
-            info!("Received Ctrl+C, shutting down");
-        }
+        // Sleep before restarting
+        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 
     Ok(())
