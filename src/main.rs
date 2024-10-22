@@ -241,6 +241,24 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Ngrok keepalive.
+    tokio::spawn({
+        let ngrok_url = format!("https://{}/webhook", settings.ngrok_domain.clone());
+        async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            let client = Client::new();
+            loop {
+                interval.tick().await;
+                info!("Sending Ngrok keep-alive request to: {}", ngrok_url);
+                if let Err(err) = client.get(&ngrok_url).send().await {
+                    error!("Ngrok keep-alive request failed: {}", err);
+                }
+            }
+        }
+    });
+
+
+    // Main server part.
     let listener = Session::builder()
         .authtoken(&settings.ngrok_authtoken)
         .connect()
