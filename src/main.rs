@@ -288,29 +288,35 @@ async fn afk_status_updater(
 
         let current_time = get_unix_timestamp().unwrap();
         if current_time > last_break + settings.minutes_till_afk * 60 {
-            let set_chat_title_url = format!(
-                "https://api.telegram.org/bot{}/setChatTitle",
-                settings.bot_token
-            );
-            let not_working_payload = json!({
-                "chat_id": settings.chat_id,
-                "title": settings.not_working_status
-            });
-
-            let response = client
-                .post(&set_chat_title_url)
-                .json(&not_working_payload)
-                .send()
-                .await;
-
-            info!(
-                "[SETTING NOT_WORKING] Telegram API response: {:?}",
-                response
-            );
+            set_not_working_status(&settings, &client).await;
             last_break_start.store(0, Ordering::Relaxed);
         }
     }
 }
+
+
+async fn set_not_working_status(settings: &Settings, client: &Client) {
+    let set_chat_title_url = format!(
+        "https://api.telegram.org/bot{}/setChatTitle",
+        settings.bot_token
+    );
+    let not_working_payload = json!({
+        "chat_id": settings.chat_id,
+        "title": settings.not_working_status
+    });
+
+    let response = client
+        .post(&set_chat_title_url)
+        .json(&not_working_payload)
+        .send()
+        .await;
+
+    info!(
+        "[SETTING NOT_WORKING] Telegram API response: {:?}",
+        response
+    );
+}
+
 
 async fn ngrok_healthcheck(settings: Settings, shutdown_signal: Arc<tokio::sync::Notify>) {
     let client = Client::new();
@@ -351,18 +357,17 @@ async fn ensure_toggle_track_subscription(settings: Settings) -> Result<()> {
         .await?
         .json()
         .await?;
-   
+
     // 1. Filter subscriptions by our domain
     //
-    // 2. If the length of subsctipions is zero - create the subscption 
+    // 2. If the length of subsctipions is zero - create the subscption
     //
     // 3. if length of subscriptions more than 1 - delete every other in toggltrack api, get subs
     //    again and ensure that only one is left
     //
     // 4. Ensure that the one subscription is enabled
-     
 
-    println!("RESPONSE: {:?}", subscriptios);
+    println!("Current Subscriptions: {:?}", subscriptios);
 
     Ok(())
 }
@@ -372,6 +377,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let settings = Settings::from_config().unwrap();
+    let client = Client::new();
 
     ensure_toggle_track_subscription(settings.clone()).await?;
 
@@ -397,6 +403,7 @@ async fn main() -> Result<()> {
             }
             _ = signal::ctrl_c() => {
                 info!("Received Ctrl+C, shutting down.");
+                set_not_working_status(&settings, &client).await;
                 break;
             }
         }
